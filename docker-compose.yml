@@ -4,8 +4,8 @@ services:
   telegram-bot-api:
     image: aiogram/telegram-bot-api:latest
     environment:
-      TELEGRAM_API_ID: "ТВОЙ_API_ID"       # <-- ВСТАВЬ СЮДА
-      TELEGRAM_API_HASH: "ТВОЙ_API_HASH"   # <-- ВСТАВЬ СЮДА
+      TELEGRAM_API_ID: "32536333"       # <-- ВСТАВЬ СЮДА
+      TELEGRAM_API_HASH: "006c9899d7e90542a4ee0df644374419"   # <-- ВСТАВЬ СЮДА
       TELEGRAM_LOCAL: 1
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api

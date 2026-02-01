@@ -8,7 +8,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import yt_dlp
 
 # --- CONFIG ---
-BOT_TOKEN = os.getenv("BOT_TOKEN") # Переменная окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     exit("Error: BOT_TOKEN not found")
 
@@ -17,23 +17,18 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # --- YT-DLP CONFIG ---
-# Базовые настройки с маскировкой под Android
 BASE_OPTS = {
     'quiet': True,
     'noplaylist': True,
     'extractor_args': {
         'youtube': {
-            'player_client': ['android', 'web'], # Имитация Android
-            'player_skip': ['webpage', 'configs', 'js'],
+            'player_client': ['ios', 'web'], # Маскируемся под iOS
         }
     },
-    'socket_timeout': 10,
-    # User-Agent для надежности
-    'user_agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    'socket_timeout': 30,
 }
 
 async def download_content(url, type_fmt):
-    """Скачивание в отдельном потоке"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _download_sync, url, type_fmt)
 
@@ -41,9 +36,7 @@ def _download_sync(url, type_fmt):
     filename = f"temp_{os.urandom(8).hex()}"
     opts = BASE_OPTS.copy()
     
-    # Настройки путей
-    out_path = f"{filename}.%(ext)s"
-    opts['outtmpl'] = out_path
+    opts['outtmpl'] = f"{filename}.%(ext)s"
 
     if type_fmt == 'mp3':
         opts.update({
@@ -56,7 +49,10 @@ def _download_sync(url, type_fmt):
         })
         final_ext = '.mp3'
     else:
-        # Лимит 1080p чтобы не качать 4к (Telegram не пропустит большие файлы)
+        # ХИТРОСТЬ:
+        # Мы просим лучшее видео, но не больше 1080p.
+        # Если видео короткое (<5 мин), 1080p может влезть.
+        # Если длинное, yt-dlp часто сам выберет битрейт поменьше.
         opts.update({
             'format': 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'merge_output_format': 'mp4',
@@ -65,61 +61,87 @@ def _download_sync(url, type_fmt):
 
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'video')
-            # yt-dlp может добавить расширение само, ищем файл
+            # Сначала получаем инфу без скачивания
+            info_dict = ydl.extract_info(url, download=False)
+            duration = info_dict.get('duration', 0)
+            
+            # Если видео длиннее 15 минут, есть риск не влезть в лимит
+            if duration > 900 and type_fmt == 'mp4': 
+                # Для длинных видео принудительно ставим качество похуже (480p), чтоб влезло
+                opts['format'] = 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+
+            # Теперь скачиваем
+            ydl.download([url])
+            
+            title = info_dict.get('title', 'Video')
             expected_file = filename + final_ext
+            
             if os.path.exists(expected_file):
-                return expected_file, title
-            return None, None
+                return expected_file, title, duration
+            return None, None, 0
     except Exception as e:
         logging.error(f"Download error: {e}")
-        return None, None
+        return None, None, 0
 
 # --- HANDLERS ---
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Кидай ссылку на YouTube.")
+    await message.answer("👋 Привет! Отправь ссылку на YouTube видео.\n⚠️ Лимит для обычных ботов: 50 МБ (это примерно 5-7 минут в HD).")
 
 @dp.message(F.text.contains("http"))
 async def get_link(message: types.Message):
-    # Простая клавиатура
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎵 MP3", callback_data=f"dl_mp3")],
-        [InlineKeyboardButton(text="🎬 MP4", callback_data=f"dl_mp4")]
+        [InlineKeyboardButton(text="🎵 MP3 (Аудио)", callback_data=f"dl_mp3")],
+        [InlineKeyboardButton(text="🎬 MP4 (Видео)", callback_data=f"dl_mp4")]
     ])
-    # Сохраняем ссылку как ответ на сообщение (Reply), чтобы не хранить стейты (stateless)
-    await message.reply("Выбери формат:", reply_markup=kb)
+    await message.reply("В каком формате скачать?", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith("dl_"))
 async def callback_dl(call: types.CallbackQuery):
     fmt = call.data.split("_")[1]
-    # Берем ссылку из сообщения, на которое ответил бот
     if not call.message.reply_to_message or not call.message.reply_to_message.text:
         await call.answer("Ссылка устарела", show_alert=True)
         return
 
     url = call.message.reply_to_message.text
-    await call.message.edit_text("⏳ Скачиваю... (до 1 мин)")
+    await call.message.edit_text(f"⏳ Качаю {'аудио' if fmt == 'mp3' else 'видео'}... Подожди немного.")
 
-    path, title = await download_content(url, fmt)
+    path, title, duration = await download_content(url, fmt)
 
     if path:
         try:
-            file = FSInputFile(path)
-            if fmt == 'mp3':
-                await call.message.answer_audio(file, caption=title)
+            file_size = os.path.getsize(path)
+            file_size_mb = file_size / (1024 * 1024)
+
+            if file_size_mb > 49.5:
+                await call.message.edit_text(
+                    f"❌ Файл получился слишком большим: **{file_size_mb:.1f} МБ**.\n"
+                    f"Телеграм запрещает ботам отправлять файлы > 50 МБ.\n"
+                    f"Попробуй видео покороче."
+                )
             else:
-                await call.message.answer_video(file, caption=title)
-            await call.message.delete()
+                await call.message.edit_text("📤 Отправляю файл...")
+                file = FSInputFile(path)
+                
+                if fmt == 'mp3':
+                    await call.message.answer_audio(file, caption=title)
+                else:
+                    await call.message.answer_video(
+                        file, 
+                        caption=f"{title}\n📊 Размер: {file_size_mb:.1f} MB",
+                        width=1280, height=720, # Подсказка телеграму, что это HD
+                        supports_streaming=True
+                    )
+                await call.message.delete()
+                
         except Exception as e:
-            await call.message.edit_text(f"Ошибка отправки (возможно файл > 50МБ): {e}")
+            await call.message.edit_text(f"Ошибка при отправке: {e}")
         finally:
             if os.path.exists(path):
                 os.remove(path)
     else:
-        await call.message.edit_text("Ошибка при скачивании.")
+        await call.message.edit_text("❌ Ошибка скачивания. Возможно видео недоступно или 18+.")
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)

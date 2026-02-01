@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  telegram-bot-api:
+    image: aiogram/telegram-bot-api:latest
+    environment:
+      TELEGRAM_API_ID: "ТВОЙ_API_ID"       # <-- ВСТАВЬ СЮДА
+      TELEGRAM_API_HASH: "ТВОЙ_API_HASH"   # <-- ВСТАВЬ СЮДА
+      TELEGRAM_LOCAL: 1
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+    ports:
+      - "8081:8081"
+
+  bot:
+    build: .
+    environment:
+      BOT_TOKEN: "ТВОЙ_ТОКЕН_БОТА"         # <-- ВСТАВЬ СЮДА
+      # Адрес локального сервера (имя сервиса из docker-compose)
+      BOT_API_URL: "http://telegram-bot-api:8081" 
+    depends_on:
+      - telegram-bot-api
+    volumes:
+      - telegram-bot-api-data:/var/lib/telegram-bot-api
+
+volumes:
+  telegram-bot-api-data:

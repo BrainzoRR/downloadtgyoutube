@@ -15,11 +15,12 @@ services:
   bot:
     build: .
     environment:
-      BOT_TOKEN: ${BOT_TOKEN}
+      # Пробрось все возможные варианты
+      BOT_TOKEN: ${BOT_TOKEN:-${BOT_API_TOKEN}}
       BOT_API_URL: http://telegram-bot-api:8081
     depends_on:
       - telegram-bot-api
-
+    restart: unless-stopped  # <- добавь для автоперезапуска
 
 volumes:
   telegram-bot-api-data:
